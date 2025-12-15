@@ -1,0 +1,108 @@
+# ================================================
+# INSTALL REQUIRED LIBRARIES
+# ================================================
+!pip install requests beautifulsoup4 gradio --quiet
+
+import requests
+from bs4 import BeautifulSoup
+import re
+import gradio as gr
+import time
+import os
+
+# ================================================
+# SET GROQ API KEY
+# ================================================
+API_KEY = "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"
+API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# ================================================
+# TEXT CLEANING FUNCTION
+# ================================================
+def clean_text(text):
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"http\S+", "", text)
+    text = re.sub(r"[^A-Za-z0-9 .,-]", "", text)
+    return text.strip()
+
+# ================================================
+# WEB SCRAPING FUNCTION
+# ================================================
+def scrape_web(query):
+    sources = [
+        f"https://www.bbc.co.uk/search?q={query}",
+        f"https://www.reuters.com/site-search/?query={query}"
+    ]
+    combined_text = ""
+    for url in sources:
+        try:
+            res = requests.get(url, timeout=6)
+            soup = BeautifulSoup(res.text, "html.parser")
+            paragraphs = soup.find_all("p")
+            combined_text += " ".join([p.get_text() for p in paragraphs[:5]]) + " "
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return combined_text.strip()
+
+# ================================================
+# CALL LLM USING GROQ API
+# ================================================
+def verify_with_llm(news_text, scraped_text):
+    prompt = f"""
+Compare the following news with trusted scraped information.
+
+NEWS PROVIDED BY USER:
+{news_text}
+
+INFORMATION FROM RELIABLE SOURCES:
+{scraped_text}
+
+Give the result in this format:
+Authenticity Score: (0-100)
+Final Decision: REAL / FAKE / POSSIBLY MISLEADING
+Explanation: (2–3 lines)
+"""
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 400
+    }
+    try:
+        response = requests.post(API_URL, headers=headers, json=data, timeout=30)
+        if response.status_code != 200:
+            return f"API Request Failed: {response.status_code} - {response.text}"
+        resp = response.json()
+        return resp["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"API Error: {e}"
+
+# ================================================
+# GRADIO FUNCTION
+# ================================================
+def ai_news_verifier(news_text):
+    if len(news_text.strip()) < 10:
+        return "Please enter a valid news text."
+
+    scraped = scrape_web(news_text[:50])
+    cleaned = clean_text(news_text)
+    result = verify_with_llm(cleaned, scraped)
+    return result
+
+# ================================================
+# LAUNCH GRADIO INTERFACE WITH BIGGER OUTPUT BOX
+# ================================================
+iface = gr.Interface(
+    fn=ai_news_verifier,
+    inputs=gr.Textbox(lines=5, placeholder="Paste your news here..."),
+    outputs=gr.Textbox(lines=15, placeholder="Verification result will appear here..."),
+    title="🔎 AI News Verifier",
+    description="Paste the news article or statement. Groq API + web scraping will verify it.",
+)
+
+iface.launch(share=True)  # share=True gives a public URL
